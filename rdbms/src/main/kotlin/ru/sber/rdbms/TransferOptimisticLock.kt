@@ -10,62 +10,58 @@ class TransferOptimisticLock {
         "1111"
     )
 
-    fun transfer(accountId1: Long, accountId2: Long, amount: Long) {
+    connection.use { connection ->
+            connection.autoCommit = false
 
-
-        connection.use { conn ->
-            val autoCommit = conn.autoCommit
             try {
-                conn.autoCommit = false
+                connection.autoCommit = false
 
-
-                var version1 = 0
-                var version2 = 0
-                var currentAmount = 0L
-
-                val preparedStatement1 = conn.prepareStatement("select * from bank where id in (?, ?)")
-                preparedStatement1.use { statement ->
+                connection.prepareStatement("SELECT amount, version FROM account1 WHERE id = ?").use { statement ->
                     statement.setLong(1, accountId1)
-                    statement.setLong(2, accountId2)
-                    statement.executeQuery().use { resultSet ->
-                        resultSet.next()
-                        currentAmount = resultSet.getLong("amount")
-                        version1 = resultSet.getInt("version")
-                        resultSet.next()
-                        version2 = resultSet.getInt("version")
+                    statement.executeQuery().use {
+                        it.next()
+                        versionId1 = it.getInt("version")
+                        if (it.getInt("amount") - amount < 0)
+                            throw NegativeAmountException()
+                    }
+                }
+                connection.prepareStatement("SELECT version FROM account1 WHERE id = ?").use { statement ->
+                    statement.setLong(1, accountId2)
+                    statement.executeQuery().use {
+                        it.next()
+                        versionId2 = it.getInt("version")
                     }
                 }
 
-                if (currentAmount - amount < 0) throw MyCustomException("Текущая сумма меньше суммы списания")
-
-                val preparedStatement2 =
-                    conn.prepareStatement("update bank set amount = amount - ?, version = version + 1 where id = ? and version = ?")
-                preparedStatement2.use { statement ->
-                    statement.setLong(1, amount)
-                    statement.setLong(2, accountId1)
-                    statement.setInt(3, version1)
-                    val updateRows = statement.executeUpdate()
-                    if (updateRows == 0) throw SQLException()
+                connection.prepareStatement("UPDATE account1 SET amount = amount - ?, version = version + 1 WHERE id = ? AND version = ?")
+                    .use { statement ->
+                        statement.setLong(1, amount)
+                        statement.setLong(2, accountId1)
+                        statement.setInt(3, versionId1)
+                        if (statement.executeUpdate() != 1)
+                            throw CoupdateException()
                 }
-                val preparedStatement3 =
-                    conn.prepareStatement("update bank set amount = amount + ?, version = version + 1 where id = ? and version = ?")
-                preparedStatement3.use { statement ->
-                    statement.setLong(1, amount)
-                    statement.setLong(2, accountId2)
-                    statement.setInt(3, version2)
-                    val updateRows = statement.executeUpdate()
-                    if (updateRows == 0) throw SQLException()
+                connection.prepareStatement("UPDATE account1 SET amount = amount + ?, version = version + 1 WHERE id = ? AND version = ?")
+                    .use { statement ->
+                        statement.setLong(1, amount)
+                        statement.setLong(2, accountId2)
+                        statement.setInt(3, versionId2)
+                        if (statement.executeUpdate() != 1)
+                            throw CoupdateException()
                 }
-                conn.commit()
 
-            } catch (exception: MyCustomException) {
-                println(exception.message)
-                conn.rollback()
-            } catch (exception: SQLException) {
-                println(exception.message )
-                conn.rollback()
+                connection.commit()
+            } catch (e: SQLException) {
+                e.printStackTrace()
+                connection.rollback()
+            } catch (e: NegativeAmountException) {
+                e.printStackTrace()
+                connection.rollback()
+            } catch (e: CoupdateException) {
+                e.printStackTrace()
+                connection.rollback()
             } finally {
-                conn.autoCommit = autoCommit
+                connection.autoCommit = true
             }
         }
     }
